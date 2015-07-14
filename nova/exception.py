@@ -1246,6 +1246,10 @@ class InsufficientFreeMemory(NovaException):
     msg_fmt = _("Insufficient free memory on compute node to start %(uuid)s.")
 
 
+class MaintenanceModeException(NovaException):
+    msg_fmt = _("Setting the host into maintenance mode failed. %(reason)s")
+
+
 class NoValidHost(NovaException):
     msg_fmt = _("No valid host was found. %(reason)s")
 

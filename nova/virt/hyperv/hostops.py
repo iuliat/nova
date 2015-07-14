@@ -26,12 +26,19 @@ from oslo_log import log as logging
 from oslo_serialization import jsonutils
 from oslo_utils import units
 
+from nova.compute import api
 from nova.compute import arch
 from nova.compute import hv_type
+from nova.compute import task_states
 from nova.compute import vm_mode
-from nova.i18n import _
+from nova.compute import vm_states
+from nova import context
+from nova import exception
+from nova.i18n import _, _LI
+from nova import objects
 from nova.virt.hyperv import constants
 from nova.virt.hyperv import utilsfactory
+from nova.virt.hyperv import vmops
 
 CONF = cfg.CONF
 CONF.import_opt('my_ip', 'nova.netconf')
@@ -42,6 +49,10 @@ class HostOps(object):
     def __init__(self):
         self._hostutils = utilsfactory.get_hostutils()
         self._pathutils = utilsfactory.get_pathutils()
+
+        self._vmutils = utilsfactory.get_vmutils()
+        self._api = api.API()
+        self._vmops = vmops.VMOps()
 
     def _get_cpu_info(self):
         """Get the CPU information.
@@ -184,3 +195,65 @@ class HostOps(object):
         return "%s up %s,  0 users,  load average: 0, 0, 0" % (
                    str(time.strftime("%H:%M:%S")),
                    str(datetime.timedelta(milliseconds=long(tick_count64))))
+
+    def host_maintenance_mode(self, host, mode):
+        """Starts/Stops host maintenance. On start, it triggers
+        guest VMs evacuation.
+        """
+        ctxt = context.get_admin_context()
+
+        if not mode:
+            self._set_service_state(host=host, binary='nova-compute',
+                                    is_disabled=False)
+            LOG.info(_LI('Host is off maintenance'))
+            return 'off_maintenance'
+        self._set_service_state(host=host, binary='nova-compute',
+                                is_disabled=True)
+        vm_names = self._vmutils.list_instances()
+        for vm_name in vm_names:
+            self._migrate_vm(ctxt, vm_name, host)
+        vms_uuid_after_migration = self._vmops.list_instance_uuids()
+        remaining_vms = len(vms_uuid_after_migration)
+        if remaining_vms == 0:
+            LOG.info(_LI('All vms have been migrated successfully'))
+            LOG.info(_LI('Host is down for maintenance'))
+            return 'on_maintenance'
+        else:
+            raise exception.MaintenanceModeException(reason='Not all vms have '
+                'been migrated: %s remaining instances' % remaining_vms)
+
+    def _set_service_state(self, host, binary, is_disabled):
+        "Enables/Disables service on host"
+
+        ctxt = context.get_admin_context(read_deleted='no')
+        service = objects.Service.get_by_args(ctxt, host, binary)
+        service.disabled = is_disabled
+        service.save()
+
+    def _migrate_vm(self, ctxt, vm_name, host):
+        try:
+            instance_uuid = self._vmutils.get_instance_uuid(vm_name)
+            if not instance_uuid:
+                LOG.info(_LI('Instance %(name)s running on %(host)s '
+                             'could not be found in database. Skip '
+                             'migrating this vm to a new host'),
+                             {'name': vm_name, 'host': host})
+                return
+            instance = objects.Instance.get_by_uuid(ctxt,
+                                                    instance_uuid)
+            self._api.live_migrate(ctxt, instance, block_migration=False,
+                                   disk_over_commit=False, host_name=None)
+            while True:
+                instance = objects.Instance.get_by_uuid(ctxt,
+                                                        instance_uuid)
+                if instance.task_state == task_states.MIGRATING:
+                    time.sleep(1)
+                    continue
+                break
+            LOG.info(_LI('VM %(name)s has been migrated'), {'name': vm_name})
+        except Exception:
+            raise exception.MigrationError(reason='Unable to migrate %s.'
+                                                  % vm_name)
+            instance.host = host
+            instance.vm_state = vm_states.ACTIVE
+            instance.save()

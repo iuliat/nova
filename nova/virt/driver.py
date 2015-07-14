@@ -1047,6 +1047,9 @@ class ComputeDriver(object):
     def host_maintenance_mode(self, host, mode):
         """Start/Stop host maintenance window. On start, it triggers
         guest VMs evacuation.
+
+        :raises nova.exception.MaintenanceModeException: If not all guest VMs
+            have been migrated successfully during VMs evacuation.
         """
         raise NotImplementedError()
 

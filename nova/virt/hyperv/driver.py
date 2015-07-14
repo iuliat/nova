@@ -252,3 +252,6 @@ class HyperVDriver(driver.ComputeDriver):
 
     def get_console_output(self, context, instance):
         return self._vmops.get_console_output(instance)
+
+    def host_maintenance_mode(self, host, mode):
+        return self._hostops.host_maintenance_mode(host, mode)

@@ -20,6 +20,9 @@ from oslo_config import cfg
 from oslo_serialization import jsonutils
 from oslo_utils import units
 
+from nova import context as nova_context
+from nova import exception
+from nova import objects
 from nova.tests.unit.virt.hyperv import test_base
 from nova.virt.hyperv import constants
 from nova.virt.hyperv import hostops
@@ -43,6 +46,10 @@ class HostOpsTestCase(test_base.HyperVBaseTestCase):
         self._hostops = hostops.HostOps()
         self._hostops._hostutils = mock.MagicMock()
         self._hostops._pathutils = mock.MagicMock()
+
+        self._hostops._vmutils = mock.MagicMock()
+        self._hostops._api = mock.MagicMock()
+        self._hostops._vmops = mock.MagicMock()
 
     def test_get_cpu_info(self):
         mock_processors = mock.MagicMock()
@@ -180,3 +187,78 @@ class HostOpsTestCase(test_base.HyperVBaseTestCase):
                    str(mock_time()), str(tdelta))
 
         self.assertEqual(expected, response)
+
+    @mock.patch.object(hostops.HostOps, '_set_service_state')
+    @mock.patch.object(nova_context, 'get_admin_context')
+    def _test_host_maintenance_mode(self, mock_get_admin_context,
+                                    mock_set_service_state,
+                                    vm_counter):
+
+        context = mock_get_admin_context.return_value
+        self._hostops._migrate_vm = mock.MagicMock()
+
+        self._hostops._vmutils.list_instances.return_value = [
+            mock.sentinel.VM_NAME]
+        self._hostops._vmops.list_instance_uuids.return_value = [
+            mock.sentinel.UUID] * vm_counter
+        if vm_counter == 0:
+            result = self._hostops.host_maintenance_mode(
+                host=mock.sentinel.HOST, mode=True)
+            self.assertEqual('on_maintenance', result)
+        else:
+            self.assertRaises(exception.MaintenanceModeException,
+                              self._hostops.host_maintenance_mode,
+                              host=mock.sentinel.HOST,
+                              mode=True)
+
+        mock_set_service_state.assert_called_once_with(
+            host=mock.sentinel.HOST, binary='nova-compute', is_disabled=True)
+
+        self._hostops._migrate_vm.assert_called_once_with(context,
+            mock.sentinel.VM_NAME, mock.sentinel.HOST)
+
+    @mock.patch.object(hostops.HostOps, '_set_service_state')
+    @mock.patch.object(nova_context, 'get_admin_context')
+    def test_host_maintenance_mode_disabled(self, mock_get_admin_context,
+                                            mock_set_service_state):
+        result = self._hostops.host_maintenance_mode(
+            host=mock.sentinel.HOST, mode=False)
+        mock_set_service_state.assert_called_once_with(
+            host=mock.sentinel.HOST, binary='nova-compute', is_disabled=False)
+        self.assertEqual('off_maintenance', result)
+
+    def test_host_maintenance_mode_enabled(self):
+        self._test_host_maintenance_mode(vm_counter=0)
+
+    def test_host_maintenance_mode_exception(self):
+        self._test_host_maintenance_mode(vm_counter=2)
+
+    @mock.patch("time.sleep")
+    @mock.patch.object(objects.Instance, 'get_by_uuid')
+    def _test_migrate_vm(self, mock_get_by_uuid, mock_sleep,
+                         instance_uuid=None):
+        self._hostops._vmutils.get_instance_uuid.return_value = instance_uuid
+        instance = mock_get_by_uuid.return_value
+        type(instance).task_state = mock.PropertyMock(
+            side_effect=['MIGRATING', 'ACTIVE'])
+        result = self._hostops._migrate_vm(ctxt=mock.sentinel.CONTEXT,
+                                           vm_name=mock.sentinel.VM_NAME,
+                                           host=mock.sentinel.HOST)
+        if instance_uuid is None:
+            self.assertIsNone(result)
+        else:
+            self._hostops._api.live_migrate.assert_called_once_with(
+                mock.sentinel.CONTEXT, instance, block_migration=False,
+                disk_over_commit=False, host_name=None)
+
+    def test_migrate_vm_not_found(self):
+        self._test_migrate_vm()
+
+    def test_migrate_vm(self):
+        self._test_migrate_vm(instance_uuid=mock.sentinel.INSTANCE_UUID)
+
+    def test_migrate_vm_exception(self):
+        self.assertRaises(exception.MigrationError, self._hostops._migrate_vm,
+                          ctxt=mock.sentinel.CONTEXT,
+                          vm_name=mock.sentinel.VM_NAME,
+                          host=mock.sentinel.HOST)
