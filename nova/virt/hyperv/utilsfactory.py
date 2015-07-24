@@ -13,9 +13,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from oslo_config import cfg
-from oslo_log import log as logging
-
 from nova.i18n import _
 from nova.virt.hyperv import hostutils
 from nova.virt.hyperv import hostutilsv2
@@ -23,88 +20,97 @@ from nova.virt.hyperv import livemigrationutils
 from nova.virt.hyperv import networkutils
 from nova.virt.hyperv import networkutilsv2
 from nova.virt.hyperv import pathutils
-from nova.virt.hyperv import rdpconsoleutils
-from nova.virt.hyperv import rdpconsoleutilsv2
 from nova.virt.hyperv import vhdutils
 from nova.virt.hyperv import vhdutilsv2
 from nova.virt.hyperv import vmutils
 from nova.virt.hyperv import vmutilsv2
+from nova.virt.hyperv import vmutilsv3
 from nova.virt.hyperv import volumeutils
 from nova.virt.hyperv import volumeutilsv2
+import os
 
-hyper_opts = [
-    cfg.BoolOpt('force_hyperv_utils_v1',
-                default=False,
-                help='Force V1 WMI utility classes'),
-    cfg.BoolOpt('force_volumeutils_v1',
-                default=False,
-                help='Force V1 volume utility class'),
-]
-
-CONF = cfg.CONF
-CONF.register_opts(hyper_opts, 'hyperv')
-
-LOG = logging.getLogger(__name__)
 
 utils = hostutils.HostUtils()
 
+class_utils = {
+    'hostutils': {'HostUtils': {'min_version': '6.0', 'max_version': '6.2'},
+                  'HostUtilsV2': {'min_version': '6.2',
+                                  'max_version': None}},
+    'livemigrationutils': {'LiveMigrationUtils': {'min_version': '6.0',
+                                                  'max_version': 'None'}},
+    'networkutils': {'NetworkUtils': {'min_version': '6.0',
+                                      'max_version': '6.2'},
+                     'NetworkUtilsV2': {'min_version': '6.2',
+                                        'max_version': None}},
+    'pathutils': {'PathUtils': {'min_version': '6.0', 'max_version': None}},
+    'vmutils': {'VMUtils': {'min_version': '6.0', 'max_version': '6.2'},
+                'VMUtilsV2': {'min_version': '6.2', 'max_version': '10'},
+                'VMUtilsV3': {'min_version': '10', 'max_version': None}},
+    'vhdutils': {'VHDUtils': {'min_version': '6.0', 'max_version': '6.2'},
+                 'VHDUtilsV2': {'min_version': '6.2', 'max_version': None}},
+    'volumeutils': {'VolumeUtils': {'min_version': '6.0',
+                                    'max_version': '6.2'},
+                    'VolumeUtilsV2': {'min_version': '6.2',
+                                      'max_version': None}},
+    'rdpconsoleutils': {'RDPConsoleUtils': {'min_version': '6.0',
+                                            'max_version': '6.2'},
+                        'RDPConsoleUtilsV2': {'min_version': '6.2',
+                                              'max_version': None}},
+}
 
-def _get_class(v1_class, v2_class, force_v1_flag):
-    # V2 classes are supported starting from Hyper-V Server 2012 and
-    # Windows Server 2012 (kernel version 6.2)
-    if not force_v1_flag and utils.check_min_windows_version(6, 2):
-        cls = v2_class
-    else:
-        cls = v1_class
-    LOG.debug("Loading class: %(module_name)s.%(class_name)s",
-              {'module_name': cls.__module__, 'class_name': cls.__name__})
-    return cls
 
+def _get_class(current_class):
+    windows_version = utils.get_windows_version()
 
-def _get_virt_utils_class(v1_class, v2_class):
-    # The "root/virtualization" WMI namespace is no longer supported on
-    # Windows Server / Hyper-V Server 2012 R2 / Windows 8.1
-    # (kernel version 6.3) or above.
-    if (CONF.hyperv.force_hyperv_utils_v1 and
-            utils.check_min_windows_version(6, 3)):
-        raise vmutils.HyperVException(
-            _('The "force_hyperv_utils_v1" option cannot be set to "True" '
-              'on Windows Server / Hyper-V Server 2012 R2 or above as the WMI '
-              '"root/virtualization" namespace is no longer supported.'))
-    return _get_class(v1_class, v2_class, CONF.hyperv.force_hyperv_utils_v1)
+    if current_class not in class_utils:
+        raise vmutils.HyperVException(_('Class does not exist.'))
+
+    existing_classes = class_utils.get(current_class)
+    for class_variant in existing_classes.keys():
+        version = existing_classes.get(class_variant)
+        if (version['min_version'] <= windows_version and
+                (version['max_version'] is None or
+                 windows_version < version['max_version'])):
+            found_class = class_variant
+            break
+    if found_class is None:
+        raise Exception("Class is not found for windows version: %s"
+                        % windows_version)
+        return
+
+    module_name = found_class.lower()
+    module = globals()[module_name]
+    instance = getattr(module, found_class)()
+    return instance
 
 
 def get_vmutils(host='.'):
-    return _get_virt_utils_class(vmutils.VMUtils, vmutilsv2.VMUtilsV2)(host)
+    return _get_class(current_class='vmutils')
 
 
 def get_vhdutils():
-    return _get_virt_utils_class(vhdutils.VHDUtils, vhdutilsv2.VHDUtilsV2)()
+    return _get_class(current_class='vhdutils')
 
 
 def get_networkutils():
-    return _get_virt_utils_class(networkutils.NetworkUtils,
-                           networkutilsv2.NetworkUtilsV2)()
+    return _get_class(current_class='networkutils')
 
 
 def get_hostutils():
-    return _get_virt_utils_class(hostutils.HostUtils,
-                                 hostutilsv2.HostUtilsV2)()
+    return _get_class(current_class='hostutils')
 
 
 def get_pathutils():
-    return pathutils.PathUtils()
+    return _get_class(current_class='pathutils')
 
 
 def get_volumeutils():
-    return _get_class(volumeutils.VolumeUtils, volumeutilsv2.VolumeUtilsV2,
-                      CONF.hyperv.force_volumeutils_v1)()
+    return _get_class(current_class='volumeutils')
 
 
 def get_livemigrationutils():
-    return livemigrationutils.LiveMigrationUtils()
+    return _get_class(current_class='livemigrationutils')
 
 
 def get_rdpconsoleutils():
-    return _get_virt_utils_class(rdpconsoleutils.RDPConsoleUtils,
-                      rdpconsoleutilsv2.RDPConsoleUtilsV2)()
+    return _get_class(current_class='rdpconsoleutils')

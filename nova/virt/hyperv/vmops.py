@@ -274,9 +274,16 @@ class VMOps(object):
         eph_vhd_path = self.create_ephemeral_vhd(instance)
         vm_gen = self.get_image_vm_generation(root_vhd_path, image_meta)
 
+        if vm_gen == constants.VM_GEN_2:
+            config_secure_boot = self.requires_uefi_config(instance,
+                                                           image_meta)
+        else:
+            config_secure_boot = False
+
         try:
             self.create_instance(instance, network_info, block_device_info,
-                                 root_vhd_path, eph_vhd_path, vm_gen)
+                                 root_vhd_path, eph_vhd_path, vm_gen,
+                                 config_secure_boot=config_secure_boot)
 
             if configdrive.required_by(instance):
                 configdrive_path = self._create_config_drive(instance,
@@ -285,14 +292,40 @@ class VMOps(object):
                                                              network_info)
 
                 self.attach_config_drive(instance, configdrive_path, vm_gen)
-
             self.power_on(instance)
         except Exception:
             with excutils.save_and_reraise_exception():
                 self.destroy(instance)
 
+    def requires_uefi_config(self, instance, image_meta):
+        flavor = instance.get_flavor()
+        flavor_extra_specs = flavor['extra_specs']
+        image_props = image_meta['properties']
+        image_prop_uefi = image_props.get(
+            constants.IMAGE_PROP_SECURE_BOOT,
+            constants.IMAGE_PROP_SECURE_BOOT_DISABLED)
+        os_type = image_props.get('os_type', None)
+
+        if os_type != 'linux':
+            return False
+        if 'os:secure_boot' in flavor['extra_specs']:
+            flavor_secure_boot = flavor_extra_specs.get(
+                constants.FLAVOR_SPEC_SECURE_BOOT)
+            if flavor_secure_boot == (
+                    constants.FLAVOR_SPEC_SECURE_BOOT_REQUIRED):
+                return True
+            elif flavor_secure_boot == (
+                    constants.IMAGE_PROP_SECURE_BOOT_DISABLED):
+                return False
+        else:
+            if image_prop_uefi == constants.IMAGE_PROP_SECURE_BOOT_REQUIRED:
+                return True
+            else:
+                return False
+
     def create_instance(self, instance, network_info, block_device_info,
-                        root_vhd_path, eph_vhd_path, vm_gen):
+                        root_vhd_path, eph_vhd_path, vm_gen,
+                        config_secure_boot=False):
         instance_name = instance.name
         instance_path = os.path.join(CONF.instances_path, instance_name)
 
@@ -303,7 +336,8 @@ class VMOps(object):
                                 CONF.hyperv.dynamic_memory_ratio,
                                 vm_gen,
                                 instance_path,
-                                [instance.uuid])
+                                [instance.uuid],
+                                config_secure_boot=config_secure_boot)
 
         self._vmutils.create_scsi_controller(instance_name)
         controller_type = VM_GENERATIONS_CONTROLLER_TYPES[vm_gen]
@@ -352,7 +386,7 @@ class VMOps(object):
                                         default_vm_gen)
         if image_prop_vm not in self._hostutils.get_supported_vm_types():
             LOG.error(_LE('Requested VM Generation %s is not supported on '
-                         ' this OS.'), image_prop_vm)
+                          ' this OS.'), image_prop_vm)
             raise vmutils.HyperVException(
                 _('Requested VM Generation %s is not supported on this '
                   'OS.') % image_prop_vm)
@@ -367,7 +401,6 @@ class VMOps(object):
             raise vmutils.HyperVException(
                 _('Requested VM Generation %s, but provided VHD instead of '
                   'VHDX.') % vm_gen)
-
         return vm_gen
 
     def _create_config_drive(self, instance, injected_files, admin_password,

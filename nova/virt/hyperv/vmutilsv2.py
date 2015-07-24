@@ -31,6 +31,8 @@ from nova.virt.hyperv import constants
 from nova.virt.hyperv import hostutils
 from nova.virt.hyperv import vmutils
 
+from nova.i18n import _LI
+
 CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
@@ -101,10 +103,12 @@ class VMUtilsV2(vmutils.VMUtils):
                     VirtualSystemType=self._VIRTUAL_SYSTEM_TYPE_REALIZED)]
 
     def _create_vm_obj(self, vs_man_svc, vm_name, vm_gen, notes,
-                       dynamic_memory_ratio, instance_path):
+                       dynamic_memory_ratio, instance_path,
+                       config_secure_boot=False):
         vs_data = self._conn.Msvm_VirtualSystemSettingData.new()
         vs_data.ElementName = vm_name
         vs_data.Notes = notes
+
         # Don't start automatically on host boot
         vs_data.AutomaticStartupAction = self._AUTOMATIC_STARTUP_ACTION_NONE
 
@@ -124,11 +128,15 @@ class VMUtilsV2(vmutils.VMUtils):
         vs_data.SuspendDataRoot = instance_path
         vs_data.SwapFileDataRoot = instance_path
 
+        if config_secure_boot is True:
+            self.set_secure_boot(vs_data)
+
         (job_path,
          vm_path,
          ret_val) = vs_man_svc.DefineSystem(ResourceSettings=[],
                                             ReferenceConfiguration=None,
                                             SystemSettings=vs_data.GetText_(1))
+
         job = self.check_ret_val(ret_val, job_path)
         if not vm_path and job:
             vm_path = job.associators(self._AFFECTED_JOB_ELEMENT_CLASS)[0]
@@ -328,3 +336,6 @@ class VMUtilsV2(vmutils.VMUtils):
                      if sasd.ResourceSubType == self._DVD_DISK_RES_SUB_TYPE]
 
         return dvd_paths
+
+    def set_secure_boot(self, vs_data):
+        LOG.info(_LI('UEFI SecureBoot not supported'))

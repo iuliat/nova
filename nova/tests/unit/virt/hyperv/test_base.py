@@ -32,7 +32,7 @@ class HyperVBaseTestCase(test.NoDBTestCase):
         wmi_patcher.start()
         patched_hostutils = hostutils_patcher.start()
 
-        patched_hostutils.check_min_windows_version.return_value = False
+        patched_hostutils.get_windows_version.return_value = "6.2"
 
         self.addCleanup(wmi_patcher.stop)
         self.addCleanup(platform_patcher.stop)
