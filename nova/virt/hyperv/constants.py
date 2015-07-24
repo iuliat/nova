@@ -98,5 +98,12 @@ IMAGE_PROP_VM_GEN = "hw_machine_type"
 IMAGE_PROP_VM_GEN_1 = "hyperv-gen1"
 IMAGE_PROP_VM_GEN_2 = "hyperv-gen2"
 
+IMAGE_PROP_SECURE_BOOT = "os_secure_boot"
+FLAVOR_SPEC_SECURE_BOOT = "os:secure_boot"
+SECURE_BOOT_REQUIRED = "required"
+SECURE_BOOT_DISABLED = "disabled"
+SECURE_BOOT_OPTIONAL = "optional"
+
+
 VM_GEN_1 = 1
 VM_GEN_2 = 2

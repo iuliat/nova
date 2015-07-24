@@ -18,40 +18,27 @@ Unit tests for the Hyper-V utils factory.
 """
 
 import mock
-from oslo_config import cfg
 
 from nova import test
 from nova.virt.hyperv import hostutils
 from nova.virt.hyperv import utilsfactory
 from nova.virt.hyperv import vmutils
-from nova.virt.hyperv import vmutilsv2
-
-CONF = cfg.CONF
 
 
 class TestHyperVUtilsFactory(test.NoDBTestCase):
-    def test_get_vmutils_force_v1_and_min_version(self):
-        self._test_returned_class(None, True, True)
 
-    def test_get_vmutils_v2(self):
-        self._test_returned_class(vmutilsv2.VMUtilsV2, False, True)
+    @mock.patch.object(hostutils.HostUtils, 'get_windows_version')
+    def test_get_class(self, mock_get_windows_version):
+        mock_get_windows_version.return_value = '6.2'
+        path = 'nova.virt.hyperv.hostutilsv2'
+        module = __import__(path, globals(), locals(), ['hostutilsv2'], -1)
+        expected_instance = getattr(module, 'HostUtilsV2')()
 
-    def test_get_vmutils_v2_r2(self):
-        self._test_returned_class(vmutils.VMUtils, False, False)
+        instance = utilsfactory._get_class('hostutils')
+        self.assertEqual(type(expected_instance), type(instance))
 
-    def test_get_vmutils_force_v1_and_not_min_version(self):
-        self._test_returned_class(vmutils.VMUtils, True, False)
-
-    def _test_returned_class(self, expected_class, force_v1, os_supports_v2):
-        CONF.set_override('force_hyperv_utils_v1', force_v1, 'hyperv')
-        with mock.patch.object(
-            hostutils.HostUtils,
-            'check_min_windows_version') as mock_check_min_windows_version:
-            mock_check_min_windows_version.return_value = os_supports_v2
-
-            if os_supports_v2 and force_v1:
-                self.assertRaises(vmutils.HyperVException,
-                                  utilsfactory.get_vmutils)
-            else:
-                actual_class = type(utilsfactory.get_vmutils())
-                self.assertEqual(actual_class, expected_class)
+    @mock.patch.object(hostutils.HostUtils, 'get_windows_version')
+    def test_get_class_not_found(self, mock_get_windows_version):
+        mock_get_windows_version.return_value = '5.2'
+        self.assertRaises(vmutils.HyperVException, utilsfactory._get_class,
+                          'hostutils')

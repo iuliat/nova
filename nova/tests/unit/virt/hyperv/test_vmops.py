@@ -257,6 +257,7 @@ class VMOpsTestCase(test_base.HyperVBaseTestCase):
             mock.sentinel.FAKE_FORMAT)
         self.assertEqual(mock.sentinel.FAKE_PATH, response)
 
+    @mock.patch('nova.virt.hyperv.vmops.VMOps.requires_uefi_config')
     @mock.patch('nova.virt.hyperv.vmops.VMOps.destroy')
     @mock.patch('nova.virt.hyperv.vmops.VMOps.power_on')
     @mock.patch('nova.virt.hyperv.vmops.VMOps.attach_config_drive')
@@ -274,7 +275,8 @@ class VMOpsTestCase(test_base.HyperVBaseTestCase):
                     mock_create_ephemeral_vhd, mock_get_image_vm_gen,
                     mock_create_instance, mock_configdrive_required,
                     mock_create_config_drive, mock_attach_config_drive,
-                    mock_power_on, mock_destroy, exists, boot_from_volume,
+                    mock_power_on, mock_destroy, mock_requires_uefi_config,
+                    exists, boot_from_volume,
                     configdrive_required, fail):
         mock_instance = fake_instance.fake_instance_obj(self.context)
         mock_image_meta = mock.MagicMock()
@@ -290,6 +292,8 @@ class VMOpsTestCase(test_base.HyperVBaseTestCase):
         mock_create_root_vhd.return_value = fake_root_path
         mock_configdrive_required.return_value = configdrive_required
         mock_create_instance.side_effect = fail
+        mock_requires_uefi_config.return_value = {'secure_boot': False,
+                                                  'os': mock.sentinel.os_type}
         if exists:
             self.assertRaises(exception.InstanceExists, self._vmops.spawn,
                               self.context, mock_instance, mock_image_meta,
@@ -319,7 +323,8 @@ class VMOpsTestCase(test_base.HyperVBaseTestCase):
                                                           mock_image_meta)
             mock_create_instance.assert_called_once_with(
                 mock_instance, mock.sentinel.INFO, mock.sentinel.DEV_INFO,
-                fake_root_path, fake_ephemeral_path, fake_vm_gen)
+                fake_root_path, fake_ephemeral_path, fake_vm_gen,
+                config_secure_boot=mock_requires_uefi_config.return_value)
             mock_configdrive_required.assert_called_once_with(mock_instance)
             if configdrive_required:
                 mock_create_config_drive.assert_called_once_with(
@@ -331,6 +336,10 @@ class VMOpsTestCase(test_base.HyperVBaseTestCase):
             mock_power_on.assert_called_once_with(mock_instance)
 
     def test_spawn(self):
+        self._test_spawn(exists=False, boot_from_volume=False,
+                         configdrive_required=True, fail=None)
+
+    def test_spawn_no_uefi(self):
         self._test_spawn(exists=False, boot_from_volume=False,
                          configdrive_required=True, fail=None)
 
@@ -381,12 +390,12 @@ class VMOpsTestCase(test_base.HyperVBaseTestCase):
                                     block_device_info=mock.sentinel.DEV_INFO,
                                     root_vhd_path=fake_root_path,
                                     eph_vhd_path=fake_ephemeral_path,
-                                    vm_gen=vm_gen)
+                                    vm_gen=vm_gen, config_secure_boot=None)
         self._vmops._vmutils.create_vm.assert_called_once_with(
             mock_instance.name, mock_instance.memory_mb,
             mock_instance.vcpus, CONF.hyperv.limit_cpu_features,
             CONF.hyperv.dynamic_memory_ratio, vm_gen, instance_path,
-            [mock_instance.uuid])
+            [mock_instance.uuid], config_secure_boot=None)
         expected = []
         ctrl_type = vmops.VM_GENERATIONS_CONTROLLER_TYPES[vm_gen]
         ctrl_disk_addr = 0
@@ -921,7 +930,7 @@ class VMOpsTestCase(test_base.HyperVBaseTestCase):
         else:
             expected_current_worker = fake_existing_worker
         self.assertEqual(expected_current_worker,
-                        self._vmops._vm_log_writers[fake_instance_uuid])
+                         self._vmops._vm_log_writers[fake_instance_uuid])
 
     def test_log_vm_serial_output_unexisting_worker(self):
         self._test_log_vm_serial_output()
@@ -1081,3 +1090,53 @@ class VMOpsTestCase(test_base.HyperVBaseTestCase):
                                       mock.sentinel.FAKE_DEST_PATH),
                             mock.call(mock.sentinel.FAKE_DVD_PATH2,
                                       mock.sentinel.FAKE_DEST_PATH))
+
+    def _test_requires_uefi_config(self, flavor_secure_boot,
+                                   image_secure_boot, os):
+        mock_instance = mock.MagicMock()
+        mock_instance.get_flavor.return_value = {
+            'extra_specs': {'os:secure_boot': flavor_secure_boot}}
+        mock_image_meta = {
+            'properties': {'os_type': os, 'os_secure_boot': image_secure_boot}}
+
+        result = self._vmops.requires_uefi_config(mock_instance,
+                                                  mock_image_meta)
+
+        if constants.SECURE_BOOT_REQUIRED == flavor_secure_boot:
+            secure_boot = True
+        elif constants.SECURE_BOOT_DISABLED == flavor_secure_boot:
+            secure_boot = False
+        elif constants.SECURE_BOOT_REQUIRED == image_secure_boot:
+            secure_boot = True
+        else:
+            secure_boot = False
+
+        expected_result = {'secure_boot': secure_boot, 'os': os}
+
+        result = self._vmops.requires_uefi_config(mock_instance,
+                                                  mock_image_meta)
+        self.assertEqual(expected_result, result)
+
+    def test_requires_uefi_config_disabled(self):
+        self._test_requires_uefi_config(
+            flavor_secure_boot=constants.SECURE_BOOT_DISABLED,
+            image_secure_boot=constants.SECURE_BOOT_REQUIRED,
+            os='linux')
+
+    def test_requires_uefi_config_optional(self):
+        self._test_requires_uefi_config(
+            flavor_secure_boot=constants.SECURE_BOOT_OPTIONAL,
+            image_secure_boot=constants.SECURE_BOOT_OPTIONAL,
+            os='linux')
+
+    def test_requires_uefi_config_no_linux(self):
+        self._test_requires_uefi_config(
+            flavor_secure_boot=constants.SECURE_BOOT_REQUIRED,
+            image_secure_boot=constants.SECURE_BOOT_OPTIONAL,
+            os=None)
+
+    def test_requires_uefi_config_enabled(self):
+        self._test_requires_uefi_config(
+            flavor_secure_boot=constants.SECURE_BOOT_OPTIONAL,
+            image_secure_boot=constants.SECURE_BOOT_REQUIRED,
+            os='linux')
